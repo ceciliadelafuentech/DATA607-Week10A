@@ -1,0 +1,10 @@
+---
+title: "Assignment10A"
+author: "Cecilia De La Fuente Chavez"
+format: html
+editor: visual
+---
+
+## Approach
+
+I’ll first reproduce the Text Mining with R's Chapter 2 example on Jane Austen’s novels. Then I’ll extend the analysis by using State of the Union addresses from the sotu package. I plan to filter the speeches for sentences related to the environment, climate, and energy, and add the Loughran-McDonald lexicon to compare its classifications with the three lexicons used in the chapter. Speeches vary in length, so I’ll track sentiment by year and normalize the results per 1,000 words. I also expect some limitations due to differences in the lexicons' domains and vocabulary coverage.
