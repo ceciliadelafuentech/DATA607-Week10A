@@ -1,0 +1,232 @@
+---
+title: "Assignment10A"
+author: "Cecilia De La Fuente Chavez"
+format: html
+execute:
+  echo: true
+editor: visual
+---
+
+## Approach Deliverable
+
+### Overview
+
+I’ll first reproduce the Text Mining with R's Chapter 2 example on Jane Austen’s novels. Then I’ll extend the analysis by using State of the Union addresses from the sotu package. I plan to filter the speeches for sentences related to the environment, climate, and energy, and add the Loughran-McDonald lexicon to compare its classifications with the three lexicons used in the chapter. Speeches vary in length, so I’ll track sentiment by year and normalize the results per 100\* words. I also expect some limitations due to differences in the lexicons' domains and vocabulary coverage.
+
+\*There was an error in the first iteration of the approach. It should be 100, not 1,000
+
+## Code Base Deliverable
+
+### Load libraries
+
+```{r}
+library(tidytext)
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(sotu)
+```
+
+### Data and transformations
+
+Tidy the text
+
+```{r}
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(
+      text,
+      regex("^chapter [\\divxlc]", ignore_case = TRUE)
+    ))
+  ) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+```
+
+Joy words in *Emma*
+
+```{r}
+nrc_joy <- get_sentiments("nrc") %>%
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+```
+
+Sentiment through each novel
+
+```{r}
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>% #80-line chunks
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+Comparing three lexicons on *Pride and Prejudice*
+
+```{r}
+pride_prejudice <- tidy_books %>%
+  filter(book == "Pride & Prejudice")
+
+afinn <- pride_prejudice %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index = linenumber %/% 80) %>%
+  summarise(sentiment = sum(value)) %>%
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>%
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>%
+    inner_join(
+      get_sentiments("nrc") %>%
+        filter(sentiment %in% c("positive", "negative"))
+    ) %>%
+    mutate(method = "NRC")
+) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bind_rows(afinn, bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+Most common positive and negative words
+
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE)
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(n, reorder(word, n), fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment", y = NULL)
+```
+
+### Extension with State of the Union speeches
+
+Changes from the book: (1) a new corpus, State of the Union addresses (`sotu` package), filtered to sentences mentioning environment-related words; (2) a fourth lexicon, Loughran-McDonald, built for business and financial text.
+
+Keep environment-related sentences
+
+```{r}
+sotu_df <- sotu_meta %>%
+  mutate(text = sotu_text)
+
+sotu_env <- sotu_df %>%
+  unnest_tokens(sentence, text, token = "sentences") %>%
+  filter(str_detect(sentence, "environment|climate|energy|pollution|conservation"))
+
+sotu_words <- sotu_env %>%
+  unnest_tokens(word, sentence)
+```
+
+Sentiment by year (Bing), normalized per 100 words. Raw counts mostly reflect how much a year talked about these topics, so scores are divided by total words.
+
+```{r}
+year_words <- sotu_words %>%
+  count(year, name = "total_words")
+
+sotu_sentiment <- sotu_words %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(year, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  left_join(year_words, by = "year") %>%
+  mutate(sentiment = (positive - negative) / total_words * 100)
+
+ggplot(sotu_sentiment, aes(year, sentiment)) +
+  geom_col() +
+  labs(y = "Net sentiment per 100 words")
+```
+
+Comparing four lexicons
+
+```{r}
+afinn_sotu <- sotu_words %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(year) %>%
+  summarise(sentiment = sum(value)) %>%
+  mutate(method = "AFINN")
+
+others_sotu <- bind_rows(
+  sotu_words %>%
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing"),
+  sotu_words %>%
+    inner_join(get_sentiments("nrc") %>%
+                 filter(sentiment %in% c("positive", "negative"))) %>%
+    mutate(method = "NRC"),
+  sotu_words %>%
+    inner_join(get_sentiments("loughran") %>%
+                 filter(sentiment %in% c("positive", "negative"))) %>%
+    mutate(method = "Loughran-McDonald")
+) %>%
+  count(method, year, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bind_rows(afinn_sotu, others_sotu) %>%
+  left_join(year_words, by = "year") %>%
+  mutate(sentiment = sentiment / total_words * 100) %>%
+  ggplot(aes(year, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+Words driving Bing vs. Loughran-McDonald
+
+```{r}
+bind_rows(
+  sotu_words %>%
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing"),
+  sotu_words %>%
+    inner_join(get_sentiments("loughran") %>%
+                 filter(sentiment %in% c("positive", "negative"))) %>%
+    mutate(method = "Loughran-McDonald")
+) %>%
+  count(method, sentiment, word) %>%
+  group_by(method, sentiment) %>%
+  slice_max(n, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  ggplot(aes(n, reorder_within(word, n, list(method, sentiment)), fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  scale_y_reordered() +
+  facet_wrap(~method + sentiment, scales = "free_y") +
+  labs(x = "Number of occurrences", y = NULL)
+```
+
+### Conclusion
+
+In the Bing sentiment by year graph, most years are above zero, so environment-related sentences are mostly net positive. Only a handful of years go negative: the mid-1790s, a few in the early 1900s, around 1919 and 1930, the mid-1980s, 1993, and about 2017. I wouldn’t attach causes to these without reading the sentences. The gaps are years with no matching sentences.
+
+In the four lexicons graphs, the overall shape is broadly similar: mostly positive. They differ in level. NRC is almost always positive. Loughran-McDonald hovers near zero and dips below it most often. AFINN and Bing fall in between. They don’t agree on the most positive year. AFINN and Bing peak around 1887, while Loughran-McDonald and NRC peak around 1925.
+
+In the words driving Bing vs. Loughran-McDonald graph, both lexicons agree on the main negative words (“problems,” “crisis,” “problem,” “critical”). Bing leans on environment-specific words. Its top positive word by far is “clean,” followed by “protect” and “protection,” and its negatives include “waste,” “toxic,” and “hazardous.” Loughran-McDonald leans on general or business-style words. Its positives include “efficiency,” “improve,” “better,” and “effective,” and its negatives include “challenge,” “against,” “serious,” “cut,” and “force.”
+
+This was an interesting assignment to work on. I have done qualitative analysis on much smaller samples, such as interview transcripts and short answers, and when reviewing coworkers’ coding I noticed they often missed context when assigning sentiment. Lexicon-based analysis appears to have the same weakness. Applied to environment-related sentences in State of the Union addresses, all four lexicons showed a mostly positive tone, but they differed in level and in which year was most positive. This approach is useful for quantifying the perceived sentiment of words across a large amount of text, but it is still not well suited to qualitative work that requires deep understanding of context.
+
+### AI Assistance
+
+Anthropic. (2026). Claude Sonnet 5.5 \[Generative AI chat\]. <https://claude.ai/>
+
+Claude was used as a supplemental tool to help clarify the assignment requirements, plan the approach, choose the additional lexicon (Loughran-McDonald), and develop the R code adapting the Chapter 2 example to the new data. It also explained the code step by step and helped troubleshoot errors. I reviewed and ran the code, checked the output, and interpreted the results as part of my analysis.
